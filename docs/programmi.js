@@ -1,5 +1,5 @@
 // Elenco dei programmi mostrati nel sito.
-// Per aggiungerne uno: copia l'exe (e il sorgente) nella cartella "download" e aggiungi qui una voce.
+// Per aggiungerne uno: copia l'exe nella cartella "download" e aggiungi qui una voce.
 const PROGRAMMI = [
   {
     nome: "Traduttore riquadro",
@@ -13,7 +13,7 @@ const PROGRAMMI = [
     ],
     requisiti: "Windows 10 o 11 (64 bit), connessione a internet",
     file: "download/Traduttore.exe",
-    sorgente: "download/Traduttore.cs",
+    sorgente: "https://github.com/adrimas87/programmi-utili/tree/main/TraduttoreRiquadro",
     note:
       "Il testo letto dallo schermo viene inviato a Google Traduttore tramite un servizio gratuito non ufficiale, che potrebbe smettere di funzionare. L'OCR legge le lingue in alfabeto latino; per le altre serve il pacchetto OCR di Windows della lingua.",
   },
