@@ -1,3 +1,32 @@
+Licenza MIT
+
+Copyright (c) 2026 adrimas
+
+Con la presente si concede gratuitamente, a chiunque ottenga una copia di
+questo software e dei file di documentazione associati (il "Software"), il
+permesso di trattare il Software senza restrizioni, inclusi, senza
+limitazione, i diritti di usare, copiare, modificare, unire, pubblicare,
+distribuire, concedere in sublicenza e/o vendere copie del Software, e di
+consentire di farlo alle persone a cui il Software viene fornito, alle
+seguenti condizioni:
+
+L'avviso di copyright sopra riportato e il presente avviso di permesso devono
+essere inclusi in tutte le copie o in parti sostanziali del Software.
+
+IL SOFTWARE VIENE FORNITO "COSÌ COM'È", SENZA GARANZIE DI ALCUN TIPO, ESPLICITE
+O IMPLICITE, INCLUSE, A TITOLO ESEMPLIFICATIVO, LE GARANZIE DI COMMERCIABILITÀ,
+DI IDONEITÀ A UNO SCOPO PARTICOLARE E DI NON VIOLAZIONE DI DIRITTI ALTRUI. IN
+NESSUN CASO GLI AUTORI O I TITOLARI DEL COPYRIGHT POTRANNO ESSERE RITENUTI
+RESPONSABILI DI RECLAMI, DANNI O ALTRE RESPONSABILITÀ, DERIVANTI DA CONTRATTO,
+ILLECITO O ALTRO, CHE NASCANO DAL SOFTWARE, DAL SUO USO O DA ALTRE OPERAZIONI
+COMPIUTE CON ESSO, O CHE VI SIANO COLLEGATI.
+
+Nota: il testo italiano è una traduzione fornita per comodità di lettura.
+In caso di dubbi o differenze fa fede il testo originale in inglese, riportato
+qui sotto.
+
+------------------------------------------------------------------------------
+
 MIT License
 
 Copyright (c) 2026 adrimas
