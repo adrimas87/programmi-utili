@@ -34,6 +34,24 @@ namespace TraduttoreRiquadro
     {
         [DllImport("user32.dll")]
         static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint affinity);
+        [DllImport("user32.dll")]
+        static extern bool RegisterHotKey(IntPtr hWnd, int id, uint modifiers, uint vk);
+        [DllImport("user32.dll")]
+        static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        static extern int RegisterWindowMessage(string name);
+        [DllImport("user32.dll")]
+        static extern short GetAsyncKeyState(int vk);
+        [DllImport("user32.dll")]
+        static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+        [DllImport("user32.dll")]
+        static extern uint GetClipboardSequenceNumber();
+
+        // messaggio con cui un secondo avvio del programma fa comparire il riquadro di quello gia' aperto
+        public static readonly int ShowMsg = RegisterWindowMessage("TraduttoreRiquadro.Mostra");
+
+        const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+        const string RunName = "TraduttoreRiquadro";
 
         static readonly Color KeyColor = Color.FromArgb(255, 1, 254);
         static readonly Color BarColor = Color.FromArgb(32, 99, 199);
@@ -50,16 +68,31 @@ namespace TraduttoreRiquadro
             "sv|Svedese", "sw|Swahili", "th|Thailandese", "de|Tedesco", "tr|Turco", "uk|Ucraino", "hu|Ungherese",
             "ur|Urdu", "vi|Vietnamita" };
 
-        static readonly string SettingsFile = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TraduttoreRiquadro", "lingue.txt");
+        static readonly string SettingsDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "TraduttoreRiquadro");
+        static readonly string SettingsFile = Path.Combine(SettingsDir, "lingue.txt");
+        static readonly string HotkeyFile = Path.Combine(SettingsDir, "tasti.txt");
 
         readonly Button btnTranslate = new Button();
         readonly Button btnClear = new Button();
         readonly Button btnClose = new Button();
+        readonly Button btnSettings = new Button();
+        readonly ToolTip tip = new ToolTip();
         readonly CheckBox chkAuto = new CheckBox();
         readonly ComboBox cmbFrom = new ComboBox();
         readonly ComboBox cmbTo = new ComboBox();
         readonly Timer timer = new Timer();
+        readonly NotifyIcon tray = new NotifyIcon();
+        readonly ToolStripMenuItem miToggle = new ToolStripMenuItem();
+
+        // tasti rapidi: [0] mostra o nasconde il riquadro, [1] traduce il testo selezionato
+        readonly Keys[] hotkeys = { Keys.Control | Keys.Alt | Keys.T, Keys.Control | Keys.Alt | Keys.S };
+        bool trayIcon = true;
+        PopupForm popup;
+        bool selBusy;
+        bool startHidden;
+        bool settingsOpen;
+        bool hideTipShown;
 
         readonly List<Block> blocks = new List<Block>();
         readonly Dictionary<string, string> cache = new Dictionary<string, string>();
@@ -75,8 +108,10 @@ namespace TraduttoreRiquadro
         int Bar { get { return S(34); } }
         int Edge { get { return S(6); } }
 
-        public MainForm()
+        public MainForm(bool hidden)
         {
+            startHidden = hidden;
+            Icon = MakeIcon();
             Text = "Traduttore riquadro";
             FormBorderStyle = FormBorderStyle.None;
             StartPosition = FormStartPosition.CenterScreen;
@@ -116,7 +151,6 @@ namespace TraduttoreRiquadro
             Controls.Add(cmbFrom);
             Controls.Add(cmbTo);
             statusLeft = x;
-            ToolTip tip = new ToolTip();
             tip.SetToolTip(cmbFrom, "Lingua originale");
             tip.SetToolTip(cmbTo, "Traduci in");
             LoadLanguages();
@@ -125,10 +159,31 @@ namespace TraduttoreRiquadro
             SetupButton(btnClose, "✕", ref cx, y, S(30), h);
             btnClose.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             btnClose.Left = ClientSize.Width - S(30) - S(8);
+            int sx = 0;
+            SetupButton(btnSettings, "⚙", ref sx, y, S(30), h);
+            btnSettings.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            btnSettings.Left = btnClose.Left - S(36);
+            tip.SetToolTip(btnSettings, "Impostazioni");
+
+            LoadHotkey();
+            ContextMenuStrip menu = new ContextMenuStrip();
+            miToggle.Text = "Mostra o nascondi il riquadro";
+            miToggle.Click += delegate { ToggleFrame(); };
+            menu.Items.Add(miToggle);
+            menu.Items.Add("Impostazioni…", null, delegate { OpenSettings(); });
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add("Esci", null, delegate { Close(); });
+            tray.Icon = Icon;
+            tray.ContextMenuStrip = menu;
+            tray.MouseClick += delegate(object s, MouseEventArgs e) { if (e.Button == MouseButtons.Left) ToggleFrame(); };
+            UpdateTray();
+            // se l'exe e' stato spostato, l'avvio automatico deve puntare alla nuova posizione
+            try { if (AutoStart) SetAutoStart(true); } catch { }
 
             btnTranslate.Click += async delegate { await TranslateNow(true); };
             btnClear.Click += delegate { chkAuto.Checked = false; ClearBlocks(); retranslate = false; SetStatus(""); };
-            btnClose.Click += delegate { Close(); };
+            btnClose.Click += delegate { if (StaysRunning) HideFrame(); else Close(); };
+            btnSettings.Click += delegate { OpenSettings(); };
             chkAuto.CheckedChanged += async delegate { if (chkAuto.Checked) await TranslateNow(true); };
             cmbTo.SelectedIndexChanged += async delegate { if (blocks.Count > 0 || chkAuto.Checked) await TranslateNow(true); };
             cmbFrom.SelectedIndexChanged += async delegate
@@ -186,11 +241,265 @@ namespace TraduttoreRiquadro
         {
             try
             {
-                Directory.CreateDirectory(Path.GetDirectoryName(SettingsFile));
+                Directory.CreateDirectory(SettingsDir);
                 File.WriteAllText(SettingsFile, FromCode + "|" + ToCode);
             }
             catch { }
+            tray.Visible = false;
+            tray.Dispose();
             base.OnFormClosed(e);
+        }
+
+        // icona disegnata al volo: un riquadro bianco con la sua barra, su fondo blu
+        static Icon MakeIcon()
+        {
+            using (Bitmap bmp = new Bitmap(32, 32, PixelFormat.Format32bppArgb))
+            {
+                using (Graphics g = Graphics.FromImage(bmp))
+                {
+                    g.Clear(BarColor);
+                    using (Pen p = new Pen(Color.White, 3))
+                        g.DrawRectangle(p, 5, 8, 21, 18);
+                    g.FillRectangle(Brushes.White, 4, 5, 24, 7);
+                }
+                return Icon.FromHandle(bmp.GetHicon());
+            }
+        }
+
+        public static string HotkeyText(Keys k)
+        {
+            return k == Keys.None ? "Nessuno" : new KeysConverter().ConvertToString(k);
+        }
+
+        void LoadHotkey()
+        {
+            try
+            {
+                string[] parts = File.ReadAllText(HotkeyFile).Trim().Split('|');
+                for (int i = 0; i < hotkeys.Length && i < parts.Length; i++) hotkeys[i] = (Keys)int.Parse(parts[i]);
+                if (parts.Length > hotkeys.Length) trayIcon = parts[hotkeys.Length] != "0";
+            }
+            catch { }
+        }
+
+        void SaveHotkey()
+        {
+            try
+            {
+                Directory.CreateDirectory(SettingsDir);
+                File.WriteAllText(HotkeyFile, (int)hotkeys[0] + "|" + (int)hotkeys[1] + "|" + (trayIcon ? "1" : "0"));
+            }
+            catch { }
+        }
+
+        void UnregisterHotkeys()
+        {
+            for (int i = 0; i < hotkeys.Length; i++) UnregisterHotKey(Handle, i + 1);
+        }
+
+        // registra le combinazioni; restituisce l'indice di quella gia' usata da un altro programma, -1 se tutto bene
+        int TryRegister(Keys[] keys)
+        {
+            UnregisterHotkeys();
+            for (int i = 0; i < keys.Length; i++)
+            {
+                Keys k = keys[i];
+                if (k == Keys.None) continue;
+                uint mod = 0x4000; // MOD_NOREPEAT
+                if ((k & Keys.Alt) != 0) mod |= 1;
+                if ((k & Keys.Control) != 0) mod |= 2;
+                if ((k & Keys.Shift) != 0) mod |= 4;
+                if (!RegisterHotKey(Handle, i + 1, mod, (uint)(k & Keys.KeyCode))) return i;
+            }
+            return -1;
+        }
+
+        static bool AutoStart
+        {
+            get
+            {
+                using (Microsoft.Win32.RegistryKey k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKey))
+                    return k != null && k.GetValue(RunName) != null;
+            }
+        }
+
+        // all'avvio di Windows parte nascosto: resta solo l'icona vicino all'orologio
+        static void SetAutoStart(bool on)
+        {
+            using (Microsoft.Win32.RegistryKey k = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(RunKey))
+            {
+                if (on) k.SetValue(RunName, "\"" + Application.ExecutablePath + "\" /avvio");
+                else k.DeleteValue(RunName, false);
+            }
+        }
+
+        // senza icona e senza tasti rapidi il riquadro nascosto non si potrebbe piu' riaprire: allora la X chiude
+        bool StaysRunning { get { return trayIcon || hotkeys[0] != Keys.None || hotkeys[1] != Keys.None; } }
+
+        void UpdateTray()
+        {
+            tray.Visible = trayIcon;
+            tip.SetToolTip(btnClose, !StaysRunning ? "Chiudi" :
+                trayIcon ? "Nascondi: il programma resta nell'icona vicino all'orologio" :
+                "Nascondi: i tasti rapidi continuano a funzionare");
+            Keys k = hotkeys[0];
+            tray.Text = k == Keys.None ? "Traduttore riquadro" : "Traduttore riquadro (" + HotkeyText(k) + ")";
+            miToggle.ShortcutKeyDisplayString = k == Keys.None ? "" : HotkeyText(k);
+        }
+
+        void ShowFrame()
+        {
+            Show();
+            Activate();
+        }
+
+        void HideFrame()
+        {
+            ClearBlocks();
+            retranslate = false;
+            Hide();
+            if (hideTipShown || !trayIcon) return;
+            hideTipShown = true;
+            tray.ShowBalloonTip(4000, "Traduttore riquadro", "Il programma resta attivo in questa icona" +
+                (hotkeys[0] == Keys.None ? "." : ": premi " + HotkeyText(hotkeys[0]) + " per riaprire il riquadro."), ToolTipIcon.Info);
+        }
+
+        static bool ModifierDown()
+        {
+            return GetAsyncKeyState(0x10) < 0 || GetAsyncKeyState(0x11) < 0 || GetAsyncKeyState(0x12) < 0;
+        }
+
+        // legge il testo selezionato nel programma in primo piano facendogli fare Ctrl+C, poi rimette a posto gli appunti
+        async Task<string> CopySelection()
+        {
+            // i tasti della combinazione devono essere rilasciati, altrimenti si sommano a Ctrl+C
+            for (int i = 0; i < 40 && ModifierDown(); i++) await Task.Delay(25);
+
+            DataObject keep = new DataObject();
+            bool had = false;
+            try
+            {
+                IDataObject old = Clipboard.GetDataObject();
+                if (old != null)
+                {
+                    foreach (string f in old.GetFormats(false))
+                    {
+                        try
+                        {
+                            object d = old.GetData(f, false);
+                            if (d != null) { keep.SetData(f, d); had = true; }
+                        }
+                        catch { }
+                    }
+                }
+            }
+            catch { }
+
+            uint seq = GetClipboardSequenceNumber();
+            keybd_event(0x11, 0, 0, UIntPtr.Zero);
+            keybd_event(0x43, 0, 0, UIntPtr.Zero);
+            keybd_event(0x43, 0, 2, UIntPtr.Zero);
+            keybd_event(0x11, 0, 2, UIntPtr.Zero);
+            for (int i = 0; i < 20 && GetClipboardSequenceNumber() == seq; i++) await Task.Delay(25);
+            // appunti invariati: non c'era niente di selezionato
+            if (GetClipboardSequenceNumber() == seq) return "";
+            await Task.Delay(50);
+
+            string text = "";
+            try { if (Clipboard.ContainsText()) text = Clipboard.GetText(); } catch { }
+            try { if (had) Clipboard.SetDataObject(keep, true); else Clipboard.Clear(); } catch { }
+            return text.Trim();
+        }
+
+        async void TranslateSelection()
+        {
+            if (selBusy || settingsOpen) return;
+            selBusy = true;
+            Point at = Cursor.Position;
+            try
+            {
+                string text = await CopySelection();
+                if (text.Length == 0) { ShowPopup("Nessun testo selezionato.", at); return; }
+                string from = FromCode, to = ToCode;
+                string key = from + ">" + to + "|" + text;
+                string tr;
+                if (!cache.TryGetValue(key, out tr))
+                {
+                    List<string> res = await Task.Run(delegate { return TranslateAll(new List<string> { text }, from, to); });
+                    tr = res[0];
+                    cache[key] = tr;
+                }
+                ShowPopup(tr, at);
+            }
+            catch (WebException ex)
+            {
+                ShowPopup("Errore di rete: " + ex.Message, at);
+            }
+            catch (Exception ex)
+            {
+                ShowPopup("Errore: " + ex.Message, at);
+            }
+            finally
+            {
+                selBusy = false;
+            }
+        }
+
+        void ShowPopup(string text, Point at)
+        {
+            if (popup != null && !popup.IsDisposed) popup.Close();
+            popup = new PopupForm(text.Replace("\r\n", "\n").Replace("\n", "\r\n"), "Traduzione - " + cmbTo.Text, at);
+            popup.Show();
+            popup.Activate();
+        }
+
+        void ToggleFrame()
+        {
+            if (Visible) HideFrame(); else ShowFrame();
+        }
+
+        void OpenSettings()
+        {
+            if (settingsOpen) return;
+            settingsOpen = true;
+            bool quit = false;
+            // finche' si scelgono le combinazioni quelle attuali non devono scattare
+            UnregisterHotkeys();
+            try
+            {
+                bool auto = false;
+                try { auto = AutoStart; } catch { }
+                using (SettingsForm f = new SettingsForm(hotkeys, auto, trayIcon, TryRegister))
+                {
+                    DialogResult r = f.ShowDialog();
+                    quit = r == DialogResult.Abort;
+                    if (r != DialogResult.OK) return;
+                    f.Hotkeys.CopyTo(hotkeys, 0);
+                    trayIcon = f.TrayIcon;
+                    SaveHotkey();
+                    try { SetAutoStart(f.AutoStart); }
+                    catch (Exception ex) { MessageBox.Show("Impossibile cambiare l'avvio automatico: " + ex.Message, "Traduttore riquadro"); }
+                }
+            }
+            finally
+            {
+                settingsOpen = false;
+                TryRegister(hotkeys);
+                UpdateTray();
+                if (quit) Close();
+            }
+        }
+
+        // primo avvio nascosto: la finestra viene creata, perche' i tasti rapidi ne hanno bisogno, ma non mostrata
+        protected override void SetVisibleCore(bool value)
+        {
+            if (startHidden)
+            {
+                startHidden = false;
+                if (!IsHandleCreated) CreateHandle();
+                value = false;
+            }
+            base.SetVisibleCore(value);
         }
 
         // usa l'OCR della lingua originale se il suo pacchetto e' installato, altrimenti quello di sistema
@@ -228,6 +537,16 @@ namespace TraduttoreRiquadro
             base.OnHandleCreated(e);
             // WDA_EXCLUDEFROMCAPTURE: la cattura dello schermo vede cosa c'e' sotto il riquadro
             excluded = SetWindowDisplayAffinity(Handle, 0x11);
+            int bad = TryRegister(hotkeys);
+            if (bad >= 0)
+                tray.ShowBalloonTip(4000, "Traduttore riquadro", "I tasti rapidi " + HotkeyText(hotkeys[bad]) +
+                    " sono già usati da un altro programma: scegline altri nelle impostazioni.", ToolTipIcon.Warning);
+        }
+
+        protected override void OnHandleDestroyed(EventArgs e)
+        {
+            UnregisterHotkeys();
+            base.OnHandleDestroyed(e);
         }
 
         Rectangle Interior()
@@ -237,7 +556,17 @@ namespace TraduttoreRiquadro
 
         protected override void WndProc(ref Message m)
         {
-            const int WM_NCHITTEST = 0x84;
+            const int WM_NCHITTEST = 0x84, WM_HOTKEY = 0x312;
+            if (m.Msg == WM_HOTKEY)
+            {
+                if ((int)m.WParam == 2) TranslateSelection(); else ToggleFrame();
+                return;
+            }
+            if (m.Msg == ShowMsg)
+            {
+                ShowFrame();
+                return;
+            }
             if (m.Msg == WM_NCHITTEST)
             {
                 long lp = m.LParam.ToInt64();
@@ -309,7 +638,7 @@ namespace TraduttoreRiquadro
                 g.FillRectangle(bar, w - Edge, 0, Edge, h);
                 g.FillRectangle(bar, 0, h - Edge, w, Edge);
             }
-            Rectangle sr = new Rectangle(statusLeft, 0, btnClose.Left - statusLeft - S(6), Bar);
+            Rectangle sr = new Rectangle(statusLeft, 0, btnSettings.Left - statusLeft - S(6), Bar);
             TextRenderer.DrawText(g, status, Font, sr, Color.White, BarColor,
                 TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
 
@@ -350,7 +679,7 @@ namespace TraduttoreRiquadro
 
         async Task TranslateNow(bool force)
         {
-            if (busy || engine == null) return;
+            if (busy || engine == null || !Visible) return;
             busy = true;
             try
             {
@@ -652,19 +981,210 @@ namespace TraduttoreRiquadro
         }
     }
 
+    class SettingsForm : Form
+    {
+        readonly CheckBox chkStart = new CheckBox();
+        readonly CheckBox chkIcon = new CheckBox();
+        readonly Keys[] hotkeys;
+
+        public Keys[] Hotkeys { get { return hotkeys; } }
+        public bool AutoStart { get { return chkStart.Checked; } }
+        public bool TrayIcon { get { return chkIcon.Checked; } }
+
+        int S(int v) { return (int)Math.Round(v * DeviceDpi / 96.0); }
+
+        // etichetta, casella che cattura la combinazione premuta e pulsante per toglierla
+        void AddHotkeyRow(int index, string label, int y)
+        {
+            Label lbl = new Label();
+            lbl.Text = label;
+            lbl.SetBounds(S(16), y, S(368), S(20));
+
+            TextBox txt = new TextBox();
+            txt.ReadOnly = true;
+            txt.BackColor = SystemColors.Window;
+            txt.ShortcutsEnabled = false;
+            txt.Text = MainForm.HotkeyText(hotkeys[index]);
+            txt.SetBounds(S(16), y + S(24), S(262), S(24));
+            txt.KeyDown += delegate(object s, KeyEventArgs e)
+            {
+                e.SuppressKeyPress = true;
+                Keys code = e.KeyCode;
+                if (code == Keys.ControlKey || code == Keys.ShiftKey || code == Keys.Menu || code == Keys.LWin || code == Keys.RWin) return;
+                // un tasto da solo non va bene: scatterebbe mentre si scrive (fanno eccezione i tasti funzione)
+                bool fkey = code >= Keys.F1 && code <= Keys.F24;
+                if ((e.Modifiers & (Keys.Control | Keys.Alt)) == 0 && !fkey) return;
+                hotkeys[index] = e.KeyData;
+                txt.Text = MainForm.HotkeyText(e.KeyData);
+            };
+
+            Button btnNone = new Button();
+            btnNone.Text = "Nessuno";
+            btnNone.SetBounds(S(286), y + S(23), S(98), S(26));
+            btnNone.Click += delegate { hotkeys[index] = Keys.None; txt.Text = MainForm.HotkeyText(Keys.None); };
+
+            Controls.AddRange(new Control[] { lbl, txt, btnNone });
+        }
+
+        public SettingsForm(Keys[] current, bool autoStart, bool trayIcon, Func<Keys[], int> tryRegister)
+        {
+            hotkeys = (Keys[])current.Clone();
+            Text = "Impostazioni - Traduttore riquadro";
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false;
+            MinimizeBox = false;
+            ShowIcon = false;
+            ShowInTaskbar = false;
+            TopMost = true;
+            StartPosition = FormStartPosition.CenterScreen;
+            Font = new Font("Segoe UI", 9f);
+            ClientSize = new Size(S(400), S(272));
+
+            chkStart.Text = "Avvia all'avvio di Windows";
+            chkStart.Checked = autoStart;
+            chkStart.SetBounds(S(16), S(14), S(368), S(24));
+            chkIcon.Text = "Mostra l'icona vicino all'orologio";
+            chkIcon.Checked = trayIcon;
+            chkIcon.SetBounds(S(16), S(42), S(368), S(24));
+            Controls.AddRange(new Control[] { chkStart, chkIcon });
+
+            AddHotkeyRow(0, "Tasti rapidi per mostrare o nascondere il riquadro:", S(80));
+            AddHotkeyRow(1, "Tasti rapidi per tradurre il testo selezionato:", S(140));
+
+            Label hint = new Label();
+            hint.Text = "Clicca in una casella e premi la combinazione, per esempio Ctrl+Alt+T.";
+            hint.ForeColor = SystemColors.GrayText;
+            hint.SetBounds(S(16), S(196), S(368), S(20));
+
+            Button btnOk = new Button();
+            btnOk.Text = "OK";
+            btnOk.SetBounds(S(206), S(232), S(84), S(28));
+            btnOk.Click += delegate
+            {
+                if (hotkeys[0] != Keys.None && hotkeys[0] == hotkeys[1])
+                {
+                    MessageBox.Show(this, "Le due combinazioni di tasti devono essere diverse.", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                int bad = tryRegister(hotkeys);
+                if (bad >= 0)
+                {
+                    MessageBox.Show(this, "I tasti " + MainForm.HotkeyText(hotkeys[bad]) + " sono già usati da un altro programma: scegline altri.",
+                        Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+                DialogResult = DialogResult.OK;
+            };
+
+            Button btnCancel = new Button();
+            btnCancel.Text = "Annulla";
+            btnCancel.DialogResult = DialogResult.Cancel;
+            btnCancel.SetBounds(S(300), S(232), S(84), S(28));
+
+            // senza icona e' l'unico modo di chiudere il programma quando resta attivo solo con i tasti rapidi
+            Button btnQuit = new Button();
+            btnQuit.Text = "Chiudi il programma";
+            btnQuit.DialogResult = DialogResult.Abort;
+            btnQuit.SetBounds(S(16), S(232), S(140), S(28));
+
+            Controls.AddRange(new Control[] { hint, btnOk, btnCancel, btnQuit });
+            AcceptButton = btnOk;
+            CancelButton = btnCancel;
+        }
+    }
+
+    // finestrella con la traduzione del testo selezionato: si chiude con Esc o cliccando altrove
+    class PopupForm : Form
+    {
+        bool closing;
+
+        int S(int v) { return (int)Math.Round(v * DeviceDpi / 96.0); }
+
+        public PopupForm(string text, string title, Point at)
+        {
+            Text = title;
+            FormBorderStyle = FormBorderStyle.SizableToolWindow;
+            ShowInTaskbar = false;
+            TopMost = true;
+            StartPosition = FormStartPosition.Manual;
+            Font = new Font("Segoe UI", 10f);
+            BackColor = SystemColors.Window;
+            Padding = new Padding(S(10));
+
+            TextBox txt = new TextBox();
+            txt.Multiline = true;
+            txt.ReadOnly = true;
+            txt.BorderStyle = BorderStyle.None;
+            txt.BackColor = SystemColors.Window;
+            txt.Dock = DockStyle.Fill;
+            txt.Text = text;
+
+            Size sz = TextRenderer.MeasureText(text, Font, new Size(S(420), int.MaxValue),
+                TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl | TextFormatFlags.NoPrefix);
+            int w = Math.Max(S(220), Math.Min(sz.Width + S(8), S(420)));
+            int h = Math.Max(S(40), Math.Min(sz.Height + S(6), S(320)));
+            if (sz.Height + S(6) > S(320))
+            {
+                txt.ScrollBars = ScrollBars.Vertical;
+                w += SystemInformation.VerticalScrollBarWidth;
+            }
+            ClientSize = new Size(w + S(20), h + S(20));
+            Controls.Add(txt);
+            txt.Select(0, 0);
+
+            // vicino al puntatore, senza uscire dallo schermo
+            Rectangle wa = Screen.FromPoint(at).WorkingArea;
+            Location = new Point(
+                Math.Max(wa.Left, Math.Min(at.X + S(12), wa.Right - Width)),
+                Math.Max(wa.Top, Math.Min(at.Y + S(16), wa.Bottom - Height)));
+        }
+
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            closing = true;
+            base.OnFormClosing(e);
+        }
+
+        protected override void OnDeactivate(EventArgs e)
+        {
+            base.OnDeactivate(e);
+            if (!closing) Close();
+        }
+
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (keyData == Keys.Escape) { Close(); return true; }
+            return base.ProcessCmdKey(ref msg, keyData);
+        }
+    }
+
     static class Program
     {
         [DllImport("user32.dll")]
         static extern bool SetProcessDPIAware();
+        [DllImport("user32.dll")]
+        static extern bool PostMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
         [STAThread]
-        static void Main()
+        static void Main(string[] args)
         {
-            SetProcessDPIAware();
-            ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
-            Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
-            Application.Run(new MainForm());
+            // "/avvio" e' l'avvio automatico con Windows: parte nascosto nell'icona vicino all'orologio
+            bool hidden = args.Length > 0 && args[0] == "/avvio";
+            bool first;
+            using (System.Threading.Mutex mutex = new System.Threading.Mutex(true, "TraduttoreRiquadro", out first))
+            {
+                if (!first)
+                {
+                    // gia' aperto: fa comparire il riquadro di quello in esecuzione (HWND_BROADCAST)
+                    if (!hidden) PostMessage((IntPtr)0xFFFF, MainForm.ShowMsg, IntPtr.Zero, IntPtr.Zero);
+                    return;
+                }
+                SetProcessDPIAware();
+                ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
+                Application.EnableVisualStyles();
+                Application.SetCompatibleTextRenderingDefault(false);
+                Application.Run(new MainForm(hidden));
+            }
         }
     }
 }

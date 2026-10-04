@@ -3,13 +3,15 @@
 const PROGRAMMI = [
   {
     nome: "Traduttore riquadro",
-    versione: "1.0",
+    versione: "1.1",
     descrizione:
       "Un riquadro che sposti e ridimensioni sopra qualsiasi cosa sullo schermo: legge il testo che c'è sotto, anche dentro le immagini, e mostra la traduzione al suo posto.",
     funzioni: [
       "Legge testo e immagini con l'OCR integrato di Windows",
       "Lingua originale rilevata automaticamente, oltre 50 lingue di destinazione",
       "Modalità Auto: ritraduce da solo quando il contenuto cambia",
+      "Tasti rapidi a scelta per aprire il riquadro e per tradurre al volo il testo selezionato",
+      "Icona vicino all'orologio con le impostazioni e l'avvio automatico con Windows",
     ],
     requisiti: "Windows 10 o 11 (64 bit), connessione a internet",
     file: "download/Traduttore.exe",
