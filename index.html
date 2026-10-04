@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Programmi utili – piccoli programmi gratuiti per Windows</title>
+<meta name="description" content="Piccoli programmi gratuiti per Windows, con codice sorgente incluso.">
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #1c2330; --muted: #5b6676;
+    --line: #dfe3ea; --accent: #2063c7; --accent-text: #ffffff; --note: #fff7e0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12161d; --card: #1b212b; --text: #e8ecf2; --muted: #9aa6b6;
+      --line: #2c3442; --accent: #4d8fee; --accent-text: #0b1220; --note: #2c2814;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.55 "Segoe UI", system-ui, -apple-system, sans-serif;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 0 16px; }
+  header { padding: 56px 0 28px; }
+  h1 { margin: 0 0 8px; font-size: 2.2rem; letter-spacing: -0.02em; }
+  header p { margin: 0; color: var(--muted); font-size: 1.1rem; max-width: 60ch; }
+  h2 { font-size: 1.25rem; margin: 40px 0 14px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    padding: 24px; margin-bottom: 18px;
+  }
+  .card h3 { margin: 0; font-size: 1.35rem; }
+  .ver { color: var(--muted); font-size: 0.9rem; font-weight: 400; margin-left: 8px; }
+  .card p { margin: 10px 0; }
+  .card ul { margin: 10px 0; padding-left: 20px; }
+  .req { color: var(--muted); font-size: 0.92rem; }
+  .note {
+    background: var(--note); border-radius: 8px; padding: 10px 12px;
+    font-size: 0.92rem; margin: 14px 0;
+  }
+  .actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-top: 16px; }
+  .btn {
+    display: inline-block; background: var(--accent); color: var(--accent-text);
+    padding: 10px 20px; border-radius: 8px; text-decoration: none; font-weight: 600;
+  }
+  .btn:hover { filter: brightness(1.1); }
+  a { color: var(--accent); }
+  ol { padding-left: 22px; }
+  footer {
+    margin-top: 48px; padding: 24px 0 40px; border-top: 1px solid var(--line);
+    color: var(--muted); font-size: 0.9rem;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Programmi utili</h1>
+    <p>Piccoli programmi gratuiti per Windows. Niente installazione, niente pubblicità, codice sorgente incluso.</p>
+  </header>
+
+  <main>
+    <h2>Programmi</h2>
+    <div id="elenco"></div>
+
+    <h2>Windows mostra un avviso all'avvio?</h2>
+    <div class="card">
+      <p>I programmi non hanno una firma digitale a pagamento, quindi al primo avvio Windows può mostrare
+         «Windows ha protetto il PC». Per avviarli comunque:</p>
+      <ol>
+        <li>clicca su <strong>Ulteriori informazioni</strong>;</li>
+        <li>clicca su <strong>Esegui comunque</strong>.</li>
+      </ol>
+      <p>Di ogni programma puoi scaricare il codice sorgente e controllare cosa fa.</p>
+    </div>
+  </main>
+
+  <footer>
+    I programmi sono gratuiti e distribuiti con <a href="LICENZA.txt">licenza MIT</a>: sono forniti «così come sono»,
+    senza alcuna garanzia.
+  </footer>
+</div>
+
+<script src="programmi.js"></script>
+<script>
+  function el(tag, text, cls) {
+    const e = document.createElement(tag);
+    if (text) e.textContent = text;
+    if (cls) e.className = cls;
+    return e;
+  }
+  const elenco = document.getElementById("elenco");
+  for (const p of PROGRAMMI) {
+    const card = el("article", null, "card");
+    const h = el("h3", p.nome);
+    h.appendChild(el("span", "versione " + p.versione, "ver"));
+    card.appendChild(h);
+    card.appendChild(el("p", p.descrizione));
+    if (p.funzioni) {
+      const ul = el("ul");
+      for (const f of p.funzioni) ul.appendChild(el("li", f));
+      card.appendChild(ul);
+    }
+    card.appendChild(el("p", "Requisiti: " + p.requisiti, "req"));
+    if (p.note) card.appendChild(el("div", p.note, "note"));
+    const actions = el("div", null, "actions");
+    const dl = el("a", "Scarica gratis", "btn");
+    dl.href = p.file;
+    dl.setAttribute("download", "");
+    actions.appendChild(dl);
+    if (p.sorgente) {
+      const src = el("a", "Codice sorgente");
+      src.href = p.sorgente;
+      actions.appendChild(src);
+    }
+    card.appendChild(actions);
+    elenco.appendChild(card);
+  }
+</script>
+</body>
+</html>
