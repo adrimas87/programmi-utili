@@ -53,7 +53,7 @@ namespace TraduttoreRiquadro
         public static readonly int ShowMsg = RegisterWindowMessage("TraduttoreRiquadro.Mostra");
 
         // da aumentare a ogni pubblicazione: pubblica.cmd la scrive anche nel sito
-        public const string Version = "1.3";
+        public const string Version = "1.4";
         const string SiteUrl = "https://adrimas87.github.io/programmi-utili/";
         const string UpdateInfoUrl = SiteUrl + "download/Traduttore.txt";
         const string UpdateExeUrl = SiteUrl + "download/Traduttore.exe";
@@ -138,8 +138,8 @@ namespace TraduttoreRiquadro
             DoubleBuffered = true;
             ResizeRedraw = true;
             Font = new Font("Segoe UI", 9f);
-            Size = new Size(S(700), S(400));
-            MinimumSize = new Size(S(620), S(120));
+            Size = new Size(S(760), S(400));
+            MinimumSize = new Size(S(690), S(120));
 
             int x = S(10), y = S(5), h = Bar - S(10);
             SetupButton(btnTranslate, "Traduci", ref x, y, S(70), h);
@@ -798,7 +798,13 @@ namespace TraduttoreRiquadro
                 g.FillRectangle(bar, w - Edge, 0, Edge, h);
                 g.FillRectangle(bar, 0, h - Edge, w, Edge);
             }
-            Rectangle sr = new Rectangle(statusLeft, 0, btnSettings.Left - statusLeft - S(6), Bar);
+            // versione a destra, prima del pulsante "?"; lo stato usa lo spazio che resta
+            const TextFormatFlags barFlags = TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
+            string ver = "v" + Version;
+            int vw = TextRenderer.MeasureText(g, ver, Font, Size.Empty, barFlags).Width;
+            Rectangle vr = new Rectangle(btnHelp.Left - S(6) - vw, 0, vw, Bar);
+            TextRenderer.DrawText(g, ver, Font, vr, Color.FromArgb(200, 218, 245), BarColor, barFlags | TextFormatFlags.Right);
+            Rectangle sr = new Rectangle(statusLeft, 0, vr.Left - statusLeft - S(8), Bar);
             TextRenderer.DrawText(g, status, Font, sr, Color.White, BarColor,
                 TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
 
