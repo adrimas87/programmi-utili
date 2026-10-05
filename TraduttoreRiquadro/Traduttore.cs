@@ -52,6 +52,12 @@ namespace TraduttoreRiquadro
         // messaggio con cui un secondo avvio del programma fa comparire il riquadro di quello gia' aperto
         public static readonly int ShowMsg = RegisterWindowMessage("TraduttoreRiquadro.Mostra");
 
+        // da aumentare a ogni pubblicazione: pubblica.cmd la scrive anche nel sito
+        public const string Version = "1.2";
+        const string SiteUrl = "https://adrimas87.github.io/programmi-utili/";
+        const string UpdateInfoUrl = SiteUrl + "download/Traduttore.txt";
+        const string UpdateExeUrl = SiteUrl + "download/Traduttore.exe";
+
         const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
         const string RunName = "TraduttoreRiquadro";
 
@@ -79,11 +85,13 @@ namespace TraduttoreRiquadro
         readonly Button btnClear = new Button();
         readonly Button btnClose = new Button();
         readonly Button btnSettings = new Button();
+        readonly Button btnHelp = new Button();
         readonly ToolTip tip = new ToolTip();
         readonly CheckBox chkAuto = new CheckBox();
         readonly ComboBox cmbFrom = new ComboBox();
         readonly ComboBox cmbTo = new ComboBox();
         readonly Timer timer = new Timer();
+        readonly Timer updateTimer = new Timer();
         readonly NotifyIcon tray = new NotifyIcon();
         readonly ToolStripMenuItem miToggle = new ToolStripMenuItem();
 
@@ -95,6 +103,11 @@ namespace TraduttoreRiquadro
         bool startHidden;
         bool settingsOpen;
         bool hideTipShown;
+        bool autoUpdate = true;
+        bool updateBusy;
+        bool justUpdated;
+        string pendingVersion;
+        DateTime nextCheck = DateTime.Now.AddSeconds(30);
 
         readonly List<Block> blocks = new List<Block>();
         readonly Dictionary<string, string> cache = new Dictionary<string, string>();
@@ -111,9 +124,10 @@ namespace TraduttoreRiquadro
         int Bar { get { return S(34); } }
         int Edge { get { return S(6); } }
 
-        public MainForm(bool hidden)
+        public MainForm(bool hidden, bool updated)
         {
             startHidden = hidden;
+            justUpdated = updated;
             Icon = MakeIcon();
             Text = "Traduttore riquadro";
             FormBorderStyle = FormBorderStyle.None;
@@ -167,6 +181,11 @@ namespace TraduttoreRiquadro
             btnSettings.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             btnSettings.Left = btnClose.Left - S(36);
             tip.SetToolTip(btnSettings, "Impostazioni");
+            int hx = 0;
+            SetupButton(btnHelp, "?", ref hx, y, S(30), h);
+            btnHelp.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            btnHelp.Left = btnSettings.Left - S(36);
+            tip.SetToolTip(btnHelp, "Pagina del programma: istruzioni e ultima versione da scaricare");
 
             LoadHotkey();
             ContextMenuStrip menu = new ContextMenuStrip();
@@ -174,6 +193,8 @@ namespace TraduttoreRiquadro
             miToggle.Click += delegate { ToggleFrame(); };
             menu.Items.Add(miToggle);
             menu.Items.Add("Impostazioni…", null, delegate { OpenSettings(); });
+            menu.Items.Add("Controlla gli aggiornamenti", null, async delegate { await CheckUpdate(true); });
+            menu.Items.Add("Pagina del programma", null, delegate { OpenSite(); });
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Esci", null, delegate { Close(); });
             tray.Icon = Icon;
@@ -187,6 +208,7 @@ namespace TraduttoreRiquadro
             btnClear.Click += delegate { chkAuto.Checked = false; ClearBlocks(); retranslate = false; SetStatus(""); };
             btnClose.Click += delegate { if (StaysRunning) HideFrame(); else Close(); };
             btnSettings.Click += delegate { OpenSettings(); };
+            btnHelp.Click += delegate { OpenSite(); };
             chkAuto.CheckedChanged += async delegate { if (chkAuto.Checked) await TranslateNow(true); };
             cmbTo.SelectedIndexChanged += async delegate { if (blocks.Count > 0 || chkAuto.Checked) await TranslateNow(true); };
             cmbFrom.SelectedIndexChanged += async delegate
@@ -198,6 +220,17 @@ namespace TraduttoreRiquadro
             timer.Interval = 1500;
             timer.Tick += async delegate { if (chkAuto.Checked) await TranslateNow(false); };
             timer.Start();
+
+            // ogni minuto: si riavvia se un aggiornamento aspetta, e ogni 6 ore controlla il sito
+            DeleteOldExe();
+            updateTimer.Interval = 60000;
+            updateTimer.Tick += async delegate
+            {
+                DeleteOldExe();
+                TryRestart();
+                if (autoUpdate && DateTime.Now >= nextCheck) await CheckUpdate(false);
+            };
+            updateTimer.Start();
 
             CreateEngine();
             if (engine == null) status = "OCR di Windows non disponibile";
@@ -281,6 +314,7 @@ namespace TraduttoreRiquadro
                 string[] parts = File.ReadAllText(HotkeyFile).Trim().Split('|');
                 for (int i = 0; i < hotkeys.Length && i < parts.Length; i++) hotkeys[i] = (Keys)int.Parse(parts[i]);
                 if (parts.Length > hotkeys.Length) trayIcon = parts[hotkeys.Length] != "0";
+                if (parts.Length > hotkeys.Length + 1) autoUpdate = parts[hotkeys.Length + 1] != "0";
             }
             catch { }
         }
@@ -290,7 +324,7 @@ namespace TraduttoreRiquadro
             try
             {
                 Directory.CreateDirectory(SettingsDir);
-                File.WriteAllText(HotkeyFile, (int)hotkeys[0] + "|" + (int)hotkeys[1] + "|" + (trayIcon ? "1" : "0"));
+                File.WriteAllText(HotkeyFile, (int)hotkeys[0] + "|" + (int)hotkeys[1] + "|" + (trayIcon ? "1" : "0") + "|" + (autoUpdate ? "1" : "0"));
             }
             catch { }
         }
@@ -361,6 +395,7 @@ namespace TraduttoreRiquadro
             ClearBlocks();
             retranslate = false;
             Hide();
+            if (TryRestart()) return;
             if (hideTipShown || !trayIcon) return;
             hideTipShown = true;
             tray.ShowBalloonTip(4000, "Traduttore riquadro", "Il programma resta attivo in questa icona" +
@@ -472,13 +507,14 @@ namespace TraduttoreRiquadro
             {
                 bool auto = false;
                 try { auto = AutoStart; } catch { }
-                using (SettingsForm f = new SettingsForm(hotkeys, auto, trayIcon, TryRegister))
+                using (SettingsForm f = new SettingsForm(hotkeys, auto, trayIcon, autoUpdate, TryRegister))
                 {
                     DialogResult r = f.ShowDialog();
                     quit = r == DialogResult.Abort;
                     if (r != DialogResult.OK) return;
                     f.Hotkeys.CopyTo(hotkeys, 0);
                     trayIcon = f.TrayIcon;
+                    autoUpdate = f.AutoUpdate;
                     SaveHotkey();
                     try { SetAutoStart(f.AutoStart); }
                     catch (Exception ex) { MessageBox.Show("Impossibile cambiare l'avvio automatico: " + ex.Message, "Traduttore riquadro"); }
@@ -491,6 +527,98 @@ namespace TraduttoreRiquadro
                 UpdateTray();
                 if (quit) Close();
             }
+        }
+
+        void OpenSite()
+        {
+            try { System.Diagnostics.Process.Start(SiteUrl); }
+            catch (Exception ex) { MessageBox.Show("Impossibile aprire " + SiteUrl + ": " + ex.Message, "Traduttore riquadro"); }
+        }
+
+        void Notify(string text, bool manual)
+        {
+            if (trayIcon) tray.ShowBalloonTip(5000, "Traduttore riquadro", text, ToolTipIcon.Info);
+            else if (manual) MessageBox.Show(text, "Traduttore riquadro");
+        }
+
+        static void DeleteOldExe()
+        {
+            try { File.Delete(Application.ExecutablePath + ".old"); } catch { }
+        }
+
+        async Task CheckUpdate(bool manual)
+        {
+            if (pendingVersion != null)
+            {
+                if (manual) Notify("La versione " + pendingVersion + " è già pronta: verrà usata quando nascondi o chiudi il riquadro.", true);
+                return;
+            }
+            if (updateBusy) return;
+            updateBusy = true;
+            nextCheck = DateTime.Now.AddHours(6);
+            try
+            {
+                string ver = await Task.Run(delegate { return DownloadUpdate(); });
+                if (ver == null)
+                {
+                    if (manual) Notify("Hai già l'ultima versione (" + Version + ").", true);
+                    return;
+                }
+                pendingVersion = ver;
+                if (!TryRestart())
+                    Notify("È pronta la versione " + ver + ": verrà usata quando nascondi o chiudi il riquadro.", manual);
+            }
+            catch (Exception ex)
+            {
+                // senza rete o senza permessi sulla cartella si riprova al prossimo controllo
+                if (manual) Notify("Impossibile aggiornare: " + ex.Message, true);
+            }
+            finally
+            {
+                updateBusy = false;
+            }
+        }
+
+        // il sito pubblica un file con la versione e l'impronta SHA-256 dell'exe: se e' piu' recente lo scarica,
+        // lo verifica e lo mette al posto di questo (un exe in esecuzione si puo' rinominare, non sovrascrivere)
+        static string DownloadUpdate()
+        {
+            using (WebClient wc = new WebClient())
+            {
+                wc.Headers[HttpRequestHeader.UserAgent] = "Mozilla/5.0";
+                string nocache = "?t=" + DateTime.UtcNow.Ticks;
+                string[] info = wc.DownloadString(UpdateInfoUrl + nocache).Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                if (info.Length < 2) throw new InvalidDataException("informazioni sulla versione non valide");
+                string ver = info[0].Trim();
+                if (new Version(ver) <= new Version(Version)) return null;
+
+                string exe = Application.ExecutablePath, tmp = exe + ".new", old = exe + ".old";
+                wc.DownloadFile(UpdateExeUrl + nocache, tmp);
+                string hash;
+                using (SHA256 sha = SHA256.Create())
+                using (FileStream fs = File.OpenRead(tmp))
+                    hash = BitConverter.ToString(sha.ComputeHash(fs)).Replace("-", "");
+                if (!string.Equals(hash, info[1].Trim(), StringComparison.OrdinalIgnoreCase))
+                {
+                    File.Delete(tmp);
+                    throw new InvalidDataException("il file scaricato non corrisponde");
+                }
+                File.Delete(old);
+                File.Move(exe, old);
+                try { File.Move(tmp, exe); }
+                catch { File.Move(old, exe); throw; }
+                return ver;
+            }
+        }
+
+        // il riavvio avviene solo a riquadro nascosto e senza finestre aperte, per non interrompere chi lo sta usando
+        bool TryRestart()
+        {
+            if (pendingVersion == null || Visible || settingsOpen || selBusy || (popup != null && !popup.IsDisposed)) return false;
+            try { System.Diagnostics.Process.Start(Application.ExecutablePath, "/aggiornato /avvio"); }
+            catch { return false; }
+            Close();
+            return true;
         }
 
         // primo avvio nascosto: la finestra viene creata, perche' i tasti rapidi ne hanno bisogno, ma non mostrata
@@ -544,6 +672,8 @@ namespace TraduttoreRiquadro
             if (bad >= 0)
                 tray.ShowBalloonTip(4000, "Traduttore riquadro", "I tasti rapidi " + HotkeyText(hotkeys[bad]) +
                     " sono già usati da un altro programma: scegline altri nelle impostazioni.", ToolTipIcon.Warning);
+            else if (justUpdated && trayIcon)
+                tray.ShowBalloonTip(4000, "Traduttore riquadro", "Aggiornato alla versione " + Version + ".", ToolTipIcon.Info);
         }
 
         protected override void OnHandleDestroyed(EventArgs e)
@@ -1047,11 +1177,13 @@ namespace TraduttoreRiquadro
     {
         readonly CheckBox chkStart = new CheckBox();
         readonly CheckBox chkIcon = new CheckBox();
+        readonly CheckBox chkUpdate = new CheckBox();
         readonly Keys[] hotkeys;
 
         public Keys[] Hotkeys { get { return hotkeys; } }
         public bool AutoStart { get { return chkStart.Checked; } }
         public bool TrayIcon { get { return chkIcon.Checked; } }
+        public bool AutoUpdate { get { return chkUpdate.Checked; } }
 
         int S(int v) { return (int)Math.Round(v * DeviceDpi / 96.0); }
 
@@ -1088,10 +1220,10 @@ namespace TraduttoreRiquadro
             Controls.AddRange(new Control[] { lbl, txt, btnNone });
         }
 
-        public SettingsForm(Keys[] current, bool autoStart, bool trayIcon, Func<Keys[], int> tryRegister)
+        public SettingsForm(Keys[] current, bool autoStart, bool trayIcon, bool autoUpdate, Func<Keys[], int> tryRegister)
         {
             hotkeys = (Keys[])current.Clone();
-            Text = "Impostazioni - Traduttore riquadro";
+            Text = "Impostazioni - Traduttore riquadro " + MainForm.Version;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
             MinimizeBox = false;
@@ -1100,7 +1232,7 @@ namespace TraduttoreRiquadro
             TopMost = true;
             StartPosition = FormStartPosition.CenterScreen;
             Font = new Font("Segoe UI", 9f);
-            ClientSize = new Size(S(400), S(272));
+            ClientSize = new Size(S(400), S(300));
 
             chkStart.Text = "Avvia all'avvio di Windows";
             chkStart.Checked = autoStart;
@@ -1108,19 +1240,22 @@ namespace TraduttoreRiquadro
             chkIcon.Text = "Mostra l'icona vicino all'orologio";
             chkIcon.Checked = trayIcon;
             chkIcon.SetBounds(S(16), S(42), S(368), S(24));
-            Controls.AddRange(new Control[] { chkStart, chkIcon });
+            chkUpdate.Text = "Installa da solo le nuove versioni";
+            chkUpdate.Checked = autoUpdate;
+            chkUpdate.SetBounds(S(16), S(70), S(368), S(24));
+            Controls.AddRange(new Control[] { chkStart, chkIcon, chkUpdate });
 
-            AddHotkeyRow(0, "Tasti rapidi per mostrare o nascondere il riquadro:", S(80));
-            AddHotkeyRow(1, "Tasti rapidi per tradurre il testo selezionato:", S(140));
+            AddHotkeyRow(0, "Tasti rapidi per mostrare o nascondere il riquadro:", S(108));
+            AddHotkeyRow(1, "Tasti rapidi per tradurre il testo selezionato:", S(168));
 
             Label hint = new Label();
             hint.Text = "Clicca in una casella e premi la combinazione, per esempio Ctrl+Alt+T.";
             hint.ForeColor = SystemColors.GrayText;
-            hint.SetBounds(S(16), S(196), S(368), S(20));
+            hint.SetBounds(S(16), S(224), S(368), S(20));
 
             Button btnOk = new Button();
             btnOk.Text = "OK";
-            btnOk.SetBounds(S(206), S(232), S(84), S(28));
+            btnOk.SetBounds(S(206), S(260), S(84), S(28));
             btnOk.Click += delegate
             {
                 if (hotkeys[0] != Keys.None && hotkeys[0] == hotkeys[1])
@@ -1141,13 +1276,13 @@ namespace TraduttoreRiquadro
             Button btnCancel = new Button();
             btnCancel.Text = "Annulla";
             btnCancel.DialogResult = DialogResult.Cancel;
-            btnCancel.SetBounds(S(300), S(232), S(84), S(28));
+            btnCancel.SetBounds(S(300), S(260), S(84), S(28));
 
             // senza icona e' l'unico modo di chiudere il programma quando resta attivo solo con i tasti rapidi
             Button btnQuit = new Button();
             btnQuit.Text = "Chiudi il programma";
             btnQuit.DialogResult = DialogResult.Abort;
-            btnQuit.SetBounds(S(16), S(232), S(140), S(28));
+            btnQuit.SetBounds(S(16), S(260), S(140), S(28));
 
             Controls.AddRange(new Control[] { hint, btnOk, btnCancel, btnQuit });
             AcceptButton = btnOk;
@@ -1231,11 +1366,18 @@ namespace TraduttoreRiquadro
         static void Main(string[] args)
         {
             // "/avvio" e' l'avvio automatico con Windows: parte nascosto nell'icona vicino all'orologio
-            bool hidden = args.Length > 0 && args[0] == "/avvio";
+            bool hidden = Array.IndexOf(args, "/avvio") >= 0;
+            // "/aggiornato": riavvio dopo un aggiornamento, aspetta che la versione vecchia abbia finito di chiudersi
+            bool updated = Array.IndexOf(args, "/aggiornato") >= 0;
             bool first;
             using (System.Threading.Mutex mutex = new System.Threading.Mutex(true, "TraduttoreRiquadro", out first))
             {
-                if (!first)
+                if (!first && updated)
+                {
+                    try { if (!mutex.WaitOne(15000)) return; }
+                    catch (System.Threading.AbandonedMutexException) { }
+                }
+                else if (!first)
                 {
                     // gia' aperto: fa comparire il riquadro di quello in esecuzione (HWND_BROADCAST)
                     if (!hidden) PostMessage((IntPtr)0xFFFF, MainForm.ShowMsg, IntPtr.Zero, IntPtr.Zero);
@@ -1245,7 +1387,7 @@ namespace TraduttoreRiquadro
                 ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
-                Application.Run(new MainForm(hidden));
+                Application.Run(new MainForm(hidden, updated));
             }
         }
     }
