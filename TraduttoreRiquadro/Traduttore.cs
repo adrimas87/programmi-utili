@@ -53,7 +53,7 @@ namespace TraduttoreRiquadro
         public static readonly int ShowMsg = RegisterWindowMessage("TraduttoreRiquadro.Mostra");
 
         // da aumentare a ogni pubblicazione: pubblica.cmd la scrive anche nel sito
-        public const string Version = "1.2";
+        public const string Version = "1.3";
         const string SiteUrl = "https://adrimas87.github.io/programmi-utili/";
         const string UpdateInfoUrl = SiteUrl + "download/Traduttore.txt";
         const string UpdateExeUrl = SiteUrl + "download/Traduttore.exe";
@@ -96,7 +96,7 @@ namespace TraduttoreRiquadro
         readonly ToolStripMenuItem miToggle = new ToolStripMenuItem();
 
         // tasti rapidi: [0] mostra o nasconde il riquadro, [1] traduce il testo selezionato
-        readonly Keys[] hotkeys = { Keys.Control | Keys.Alt | Keys.T, Keys.Control | Keys.Alt | Keys.S };
+        readonly Keys[] hotkeys = { Keys.Alt | Keys.Q, Keys.Control | Keys.Q };
         bool trayIcon = true;
         PopupForm popup;
         bool selBusy;
@@ -146,6 +146,7 @@ namespace TraduttoreRiquadro
             SetupButton(btnClear, "Pulisci", ref x, y, S(64), h);
 
             chkAuto.Text = "Auto";
+            chkAuto.Checked = true;
             chkAuto.ForeColor = Color.White;
             chkAuto.BackColor = BarColor;
             chkAuto.SetBounds(x, y, S(58), h);
@@ -197,12 +198,16 @@ namespace TraduttoreRiquadro
             menu.Items.Add("Pagina del programma", null, delegate { OpenSite(); });
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("Esci", null, delegate { Close(); });
-            tray.Icon = Icon;
+            tray.Icon = justUpdated ? MakeIcon(true) : Icon;
             tray.ContextMenuStrip = menu;
+            menu.Opening += delegate { ClearUpdatedMark(); };
             tray.MouseClick += delegate(object s, MouseEventArgs e) { if (e.Button == MouseButtons.Left) ToggleFrame(); };
             UpdateTray();
+            // al primo avvio (nessuna impostazione salvata) parte con Windows; poi decide l'utente nelle impostazioni
+            bool firstRun = !File.Exists(HotkeyFile);
+            if (firstRun) SaveHotkey();
             // se l'exe e' stato spostato, l'avvio automatico deve puntare alla nuova posizione
-            try { if (AutoStart) SetAutoStart(true); } catch { }
+            try { if (firstRun || AutoStart) SetAutoStart(true); } catch { }
 
             btnTranslate.Click += async delegate { await TranslateNow(true); };
             btnClear.Click += delegate { chkAuto.Checked = false; ClearBlocks(); retranslate = false; SetStatus(""); };
@@ -234,6 +239,7 @@ namespace TraduttoreRiquadro
 
             CreateEngine();
             if (engine == null) status = "OCR di Windows non disponibile";
+            else if (justUpdated) status = "Aggiornato alla versione " + Version;
         }
 
         static string Code(int index) { return Langs[index].Substring(0, Langs[index].IndexOf('|')); }
@@ -286,8 +292,9 @@ namespace TraduttoreRiquadro
             base.OnFormClosed(e);
         }
 
-        // icona disegnata al volo: un riquadro bianco con la sua barra, su fondo blu
-        static Icon MakeIcon()
+        // icona disegnata al volo: un riquadro bianco con la sua barra, su fondo blu;
+        // dopo un aggiornamento ha in basso a destra un pallino verde con la spunta
+        static Icon MakeIcon(bool updated = false)
         {
             using (Bitmap bmp = new Bitmap(32, 32, PixelFormat.Format32bppArgb))
             {
@@ -297,6 +304,14 @@ namespace TraduttoreRiquadro
                     using (Pen p = new Pen(Color.White, 3))
                         g.DrawRectangle(p, 5, 8, 21, 18);
                     g.FillRectangle(Brushes.White, 4, 5, 24, 7);
+                    if (updated)
+                    {
+                        g.SmoothingMode = SmoothingMode.AntiAlias;
+                        using (SolidBrush green = new SolidBrush(Color.FromArgb(22, 163, 74)))
+                            g.FillEllipse(green, 14, 14, 18, 18);
+                        using (Pen p = new Pen(Color.White, 3))
+                            g.DrawLines(p, new[] { new Point(18, 23), new Point(22, 27), new Point(28, 19) });
+                    }
                 }
                 return Icon.FromHandle(bmp.GetHicon());
             }
@@ -380,12 +395,23 @@ namespace TraduttoreRiquadro
                 trayIcon ? "Nascondi: il programma resta nell'icona vicino all'orologio" :
                 "Nascondi: i tasti rapidi continuano a funzionare");
             Keys k = hotkeys[0];
-            tray.Text = k == Keys.None ? "Traduttore riquadro" : "Traduttore riquadro (" + HotkeyText(k) + ")";
+            tray.Text = "Traduttore riquadro " + Version + (justUpdated ? " - aggiornato" : "") +
+                (k == Keys.None ? "" : " (" + HotkeyText(k) + ")");
             miToggle.ShortcutKeyDisplayString = k == Keys.None ? "" : HotkeyText(k);
+        }
+
+        // il pallino verde resta finche' l'utente non ha visto il programma
+        void ClearUpdatedMark()
+        {
+            if (!justUpdated) return;
+            justUpdated = false;
+            tray.Icon = Icon;
+            UpdateTray();
         }
 
         void ShowFrame()
         {
+            ClearUpdatedMark();
             Show();
             Activate();
         }
@@ -1249,7 +1275,7 @@ namespace TraduttoreRiquadro
             AddHotkeyRow(1, "Tasti rapidi per tradurre il testo selezionato:", S(168));
 
             Label hint = new Label();
-            hint.Text = "Clicca in una casella e premi la combinazione, per esempio Ctrl+Alt+T.";
+            hint.Text = "Clicca in una casella e premi la combinazione, per esempio Alt+Q.";
             hint.ForeColor = SystemColors.GrayText;
             hint.SetBounds(S(16), S(224), S(368), S(20));
 

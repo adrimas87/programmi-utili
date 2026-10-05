@@ -3,7 +3,7 @@
 const PROGRAMMI = [
   {
     nome: "Traduttore riquadro",
-    versione: "1.2",
+    versione: "1.3",
     descrizione:
       "Un riquadro che sposti e ridimensioni sopra qualsiasi cosa sullo schermo: legge il testo che c'è sotto, anche dentro le immagini, e mostra la traduzione al suo posto.",
     funzioni: [
