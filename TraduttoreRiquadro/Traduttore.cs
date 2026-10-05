@@ -28,6 +28,8 @@ namespace TraduttoreRiquadro
         public string Translated;
         public Color Bg;
         public Color Fg;
+        public Rectangle Box;
+        public float DrawPx;
     }
 
     class MainForm : Form
@@ -100,6 +102,7 @@ namespace TraduttoreRiquadro
         bool excluded;
         bool busy;
         bool retranslate;
+        bool laidOut;
         string lastHash;
         string status = "Posiziona il riquadro sul testo e premi Traduci";
         int statusLeft;
@@ -607,6 +610,7 @@ namespace TraduttoreRiquadro
             lastHash = null;
             if (blocks.Count == 0) return;
             blocks.Clear();
+            laidOut = false;
             retranslate = true;
             Invalidate();
         }
@@ -644,36 +648,93 @@ namespace TraduttoreRiquadro
 
             Rectangle inner = Interior();
             g.SetClip(inner);
+            if (!laidOut) { LayoutBlocks(g, inner); laidOut = true; }
+            // prima si coprono tutti i testi originali, poi si scrivono le traduzioni
             foreach (Block b in blocks)
-            {
-                if (b.Translated == null) continue;
-                DrawBlock(g, b, inner);
-            }
+                using (SolidBrush bg = new SolidBrush(b.Bg))
+                    g.FillRectangle(bg, Original(b, inner));
+            foreach (Block b in blocks) DrawBlock(g, b);
         }
 
-        void DrawBlock(Graphics g, Block b, Rectangle inner)
+        const TextFormatFlags DrawFlags = TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding | TextFormatFlags.PreserveGraphicsClipping;
+
+        Rectangle Original(Block b, Rectangle inner)
         {
-            const TextFormatFlags flags = TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding | TextFormatFlags.PreserveGraphicsClipping;
             Rectangle r = Rectangle.Round(b.Rect);
             r.Offset(inner.X, inner.Y);
             r.Inflate(S(3), S(2));
-            // stessa grandezza del testo originale: se la traduzione e' piu' lunga cresce il riquadro, non si riduce il carattere
-            using (Font f = new Font("Segoe UI", b.FontPx, GraphicsUnit.Pixel))
+            return r;
+        }
+
+        // riquadro occupato dalla traduzione con il carattere px, senza superare maxRight se e' una riga sola
+        Rectangle Measure(Graphics g, Block b, Rectangle r, float px, int maxRight)
+        {
+            using (Font f = new Font("Segoe UI", px, GraphicsUnit.Pixel))
             {
-                Size big = new Size(int.MaxValue, int.MaxValue);
                 if (b.Rect.Height < 1.5f * b.LineHeight)
                 {
                     // riga singola: si allarga verso destra prima di andare a capo
-                    int w = TextRenderer.MeasureText(g, b.Translated, f, big, flags).Width + S(6);
-                    r.Width = Math.Max(r.Width, Math.Min(w, inner.Right - r.Left));
+                    int w = TextRenderer.MeasureText(g, b.Translated, f, new Size(int.MaxValue, int.MaxValue), DrawFlags).Width + S(6);
+                    r.Width = Math.Max(r.Width, Math.Min(w, maxRight - r.Left));
                 }
-                Size sz = TextRenderer.MeasureText(g, b.Translated, f, new Size(r.Width - S(6), int.MaxValue), flags | TextFormatFlags.WordBreak);
+                Size sz = TextRenderer.MeasureText(g, b.Translated, f, new Size(r.Width - S(6), int.MaxValue), DrawFlags | TextFormatFlags.WordBreak);
                 if (sz.Height + S(4) > r.Height) r.Height = sz.Height + S(4);
                 if (sz.Width + S(6) > r.Width) r.Width = sz.Width + S(6);
-                using (SolidBrush bg = new SolidBrush(b.Bg))
-                    g.FillRectangle(bg, r);
+                return r;
+            }
+        }
+
+        // una traduzione piu' lunga dell'originale non deve finire sopra (o sotto) i blocchi vicini:
+        // si allarga solo nello spazio libero, se non basta riduce un po' il carattere, e come ultima risorsa scende
+        void LayoutBlocks(Graphics g, Rectangle inner)
+        {
+            List<Rectangle> placed = new List<Rectangle>();
+            foreach (Block b in blocks)
+            {
+                Rectangle r = Original(b, inner);
+                Rectangle own = Rectangle.Round(b.Rect);
+                int maxRight = inner.Right, maxBottom = inner.Bottom;
+                foreach (Block o in blocks)
+                {
+                    if (o == b) continue;
+                    Rectangle q = Rectangle.Round(o.Rect);
+                    if (q.Top < own.Bottom && q.Bottom > own.Top && q.Left >= own.Right)
+                        maxRight = Math.Min(maxRight, q.Left + inner.X - S(3));
+                    if (q.Left < own.Right && q.Right > own.Left && q.Top >= own.Bottom)
+                        maxBottom = Math.Min(maxBottom, q.Top + inner.Y - S(2));
+                }
+                maxRight = Math.Max(maxRight, r.Right);
+                maxBottom = Math.Max(maxBottom, r.Bottom);
+
+                float px = b.FontPx, minPx = Math.Max(S(9), b.FontPx * 0.7f);
+                Rectangle box = Measure(g, b, r, px, maxRight);
+                while ((box.Right > maxRight || box.Bottom > maxBottom) && px > minPx)
+                {
+                    px = Math.Max(minPx, px * 0.92f);
+                    box = Measure(g, b, r, px, maxRight);
+                }
+                // ancora troppo grande: scende sotto i blocchi gia' disposti invece di coprirli
+                for (bool moved = true; moved; )
+                {
+                    moved = false;
+                    foreach (Rectangle p in placed)
+                        if (p.IntersectsWith(box)) { box.Y = p.Bottom; moved = true; }
+                }
+                placed.Add(box);
+                b.Box = box;
+                b.DrawPx = px;
+            }
+        }
+
+        void DrawBlock(Graphics g, Block b)
+        {
+            using (Font f = new Font("Segoe UI", b.DrawPx, GraphicsUnit.Pixel))
+            using (SolidBrush bg = new SolidBrush(b.Bg))
+            {
+                Rectangle r = b.Box;
+                g.FillRectangle(bg, r);
                 Rectangle tr = new Rectangle(r.X + S(3), r.Y + S(2), r.Width - S(6), r.Height - S(4));
-                TextRenderer.DrawText(g, b.Translated, f, tr, b.Fg, b.Bg, flags | TextFormatFlags.WordBreak);
+                TextRenderer.DrawText(g, b.Translated, f, tr, b.Fg, b.Bg, DrawFlags | TextFormatFlags.WordBreak);
             }
         }
 
@@ -735,6 +796,7 @@ namespace TraduttoreRiquadro
                         if (string.Equals(b.Translated.Trim(), b.Text.Trim(), StringComparison.OrdinalIgnoreCase)) continue;
                         blocks.Add(b);
                     }
+                    laidOut = false;
                     lastHash = hash;
                     SetStatus(found.Count == 0 ? "Nessun testo trovato" :
                         blocks.Count == 0 ? "Testo già in " + cmbTo.Text :
